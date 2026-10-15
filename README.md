@@ -55,3 +55,11 @@ To roll back application code, stop the app first and restore the previous relea
 After saving a profile, the preview shows its public URL and a **Copy profile link** button. For example, username `xenosphinx` is available at `https://link.solaristechsvcs.com/xenosphinx`. Visitors do not need to log in; the profile displays every saved link in order, appearance settings and any Staff badge. The earlier `/?u=USERNAME` URLs still work. Missing and suspended profiles return 404. Application names `api`, `auth`, `staff`, and `health` are reserved; accounts using those names should choose another username.
 
 This update needs no database migration or config changes. Deploy the updated application files (including `profiles.js`) and restart SolarLink in Wisp. The HTTPS reverse proxy must forward username paths such as `/xenosphinx` to the same Node application as `/`; no extra DNS record is required. Existing saved profiles immediately receive their username URLs.
+
+## Staff profile editing
+
+In the Users tab, select **Edit profile** to change a user's public username, display name, bio, image URLs, accent color or links. Staff can edit ordinary users; admins can also edit other staff/admins. Use your own dashboard for your own profile. A moderation reason is required. Profile editing cannot change Discord identity, role or suspension, and does not restore a suspended account.
+
+Edits and their audit entry are saved in one transaction. Audit history records the actor, target, time, action and reason; it does not store previous profile contents. The editor detects intervening profile changes and asks you to reload instead of overwriting them. Renaming a username changes the public URL; the previous URL is not reserved or redirected.
+
+Deploy `staff.html`, `staff.js`, and the new `staff-profile.js` together and restart SolarLink. No additional database migration is needed beyond the staff migration (002).
