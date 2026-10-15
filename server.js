@@ -1,4 +1,5 @@
 import config from './config.js';
+import {installPublicProfiles,nameOk,reservedNames} from './profiles.js';
 import {installStaff, accountAuth, originCsrf} from './staff.js';
 import express from 'express';
 import session from 'express-session';
@@ -44,7 +45,6 @@ app.use('/api',rateLimit({windowMs:15*60*1000,limit:180,standardHeaders:'draft-7
 const csrf=originCsrf(base.origin);
 const auth=accountAuth(pool);
 installStaff(app,pool,auth,csrf);
-const nameOk=s=>typeof s==='string'&&/^[a-z0-9_-]{3,30}$/.test(s);
 const appearanceUrl = value => {
  if(value == null || value === '') return null;
  if(typeof value !== 'string' || value.length > 2048) throw new Error('Invalid image URL');
@@ -74,6 +74,7 @@ app.get('/auth/discord/callback',async(req,res,next)=>{try{
 app.post('/auth/logout',csrf,(req,res,next)=>req.session.destroy(err=>err?next(err):(res.clearCookie('solarlink.sid'),res.json({ok:true}))));
 app.get('/api/me',auth,async(req,res,next)=>{try{const [[u]]=await pool.execute('SELECT role,discord_id,discord_username,discord_avatar,username,display_name,bio,profile_image,background_image,banner_image,accent_color FROM users WHERE id=?',[req.session.userId]);if(!u)return res.status(401).json({error:'Account not found'});const [links]=await pool.execute('SELECT title AS label,url FROM profile_links WHERE user_id=? ORDER BY position,id',[req.session.userId]);res.json({...u,avatar_url:u.profile_image||avatar(u.discord_id,u.discord_avatar),profile_image:u.profile_image,background_image:u.background_image,banner_image:u.banner_image,accent_color:u.accent_color,links})}catch(e){next(e)}});
 app.put('/api/me',auth,csrf,async(req,res,next)=>{const {username,name,bio,links,profile_image,background_image,banner_image,accent_color}=req.body||{};
+ if(reservedNames.has(username))return res.status(400).json({error:'This username is reserved. Please choose another.'});
  if(!nameOk(username)||typeof name!=='string'||name.length>60||typeof bio!=='string'||bio.length>240||!Array.isArray(links)||links.length>30)return res.status(400).json({error:'Invalid profile fields'});
  const clean=[];for(const l of links){if(typeof l.label!=='string'||!l.label.trim()||l.label.length>80||typeof l.url!=='string'||l.url.length>2048)return res.status(400).json({error:'Invalid link'});try{const u=new URL(l.url);if(!['http:','https:'].includes(u.protocol))throw Error();clean.push([l.label.trim(),u.href])}catch{return res.status(400).json({error:'Links must be valid HTTP(S) URLs'})}}
  let picture,background,banner;
@@ -83,8 +84,8 @@ app.put('/api/me',auth,csrf,async(req,res,next)=>{const {username,name,bio,links
  const color=accent_color||'#a36aff';
  if(typeof color!=='string'||!/^#[0-9a-fA-F]{6}$/.test(color))return res.status(400).json({error:'Invalid accent color'});
  const conn=await pool.getConnection();try{await conn.beginTransaction();const [[active]]=await conn.execute('SELECT suspended FROM users WHERE id=? FOR UPDATE',[req.session.userId]);if(!active||active.suspended){await conn.rollback();return res.status(403).json({error:'Account unavailable'})}await conn.execute('UPDATE users SET username=?,display_name=?,bio=?,profile_image=?,background_image=?,banner_image=?,accent_color=? WHERE id=?',[username,name.trim(),bio.trim(),picture,background,banner,color,req.session.userId]);await conn.execute('DELETE FROM profile_links WHERE user_id=?',[req.session.userId]);for(let i=0;i<clean.length;i++)await conn.execute('INSERT INTO profile_links(user_id,title,url,position) VALUES(?,?,?,?)',[req.session.userId,...clean[i],i]);await conn.commit();res.json({ok:true})}catch(e){await conn.rollback();if(e.code==='ER_DUP_ENTRY')return res.status(409).json({error:'Username already taken'});next(e)}finally{conn.release()}});
-app.get('/api/profile/:username',async(req,res,next)=>{try{if(!nameOk(req.params.username))return res.status(404).json({error:'Not found'});const [[u]]=await pool.execute('SELECT id,role,discord_id,discord_avatar,username,display_name,bio,profile_image,background_image,banner_image,accent_color FROM users WHERE username=? AND suspended=0',[req.params.username]);if(!u)return res.status(404).json({error:'Not found'});const [links]=await pool.execute('SELECT title AS label,url FROM profile_links WHERE user_id=? ORDER BY position,id',[u.id]);res.json({username:u.username,name:u.display_name,bio:u.bio,avatar_url:u.profile_image||avatar(u.discord_id,u.discord_avatar),profile_image:u.profile_image,background_image:u.background_image,banner_image:u.banner_image,accent_color:u.accent_color,role:u.role,links})}catch(e){next(e)}});
 app.get('/staff',(req,res,next)=>{res.set('Cache-Control','no-store');next()},auth,(req,res)=>{if(!['staff','admin'].includes(req.account.role))return res.status(403).send('Staff access required');res.sendFile(path.join(root,'staff.html'))});
 const root=path.dirname(fileURLToPath(import.meta.url));app.get('/',(req,res)=>res.sendFile(path.join(root,'index.html')));
+installPublicProfiles(app,pool,avatar,root);
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'Internal server error'})});
 const port=Number(config.server.port||3000);app.listen(port,'0.0.0.0',()=>console.log('SolarLink listening on '+port));

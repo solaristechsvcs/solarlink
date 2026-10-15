@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check staff.js && node --check bootstrap-admin.js",
+    "check": "node --check server.js && node --check staff.js && node --check bootstrap-admin.js && node --check profiles.js",
     "test": "node --test"
   },
   "engines": {
