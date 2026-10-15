@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import config from './config.js';
 import express from 'express';
 import session from 'express-session';
 import mysql from 'mysql2/promise';
@@ -9,22 +9,34 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-const required=['BASE_URL','SESSION_SECRET','DISCORD_CLIENT_ID','DISCORD_CLIENT_SECRET','DISCORD_REDIRECT_URI','MYSQL_HOST','MYSQL_USER','MYSQL_DATABASE'];
-for(const key of required) if(!process.env[key]) throw new Error('Missing required configuration: '+key);
-if(process.env.SESSION_SECRET.length<32) throw new Error('SESSION_SECRET must be at least 32 characters');
-const base=new URL(process.env.BASE_URL);
-const callback=new URL(process.env.DISCORD_REDIRECT_URI);
+const required = {
+  'server.baseUrl': config.server.baseUrl,
+  'session.secret': config.session.secret,
+  'discord.clientId': config.discord.clientId,
+  'discord.clientSecret': config.discord.clientSecret,
+  'discord.redirectUri': config.discord.redirectUri,
+  'mysql.host': config.mysql.host,
+  'mysql.user': config.mysql.user,
+  'mysql.database': config.mysql.database
+};
+for (const [key, value] of Object.entries(required)) {
+  if (!value || String(value).startsWith('CHANGE_ME')) throw new Error('Set config.js: ' + key);
+}
+if (!config.mysql.password || String(config.mysql.password).startsWith('CHANGE_ME')) throw new Error('Set config.js: mysql.password');
+if(config.session.secret.length<32) throw new Error('SESSION_SECRET must be at least 32 characters');
+const base=new URL(config.server.baseUrl);
+const callback=new URL(config.discord.redirectUri);
 if(base.protocol!=='https:' && base.hostname!=='localhost') throw new Error('BASE_URL must use HTTPS');
 if(callback.origin!==base.origin || callback.pathname!=='/auth/discord/callback') throw new Error('DISCORD_REDIRECT_URI must match BASE_URL origin and /auth/discord/callback');
-const pool=mysql.createPool({host:process.env.MYSQL_HOST,port:Number(process.env.MYSQL_PORT||3306),user:process.env.MYSQL_USER,password:process.env.MYSQL_PASSWORD||'',database:process.env.MYSQL_DATABASE,waitForConnections:true,connectionLimit:10,decimalNumbers:true});
+const pool=mysql.createPool({host:config.mysql.host,port:Number(config.mysql.port||3306),user:config.mysql.user,password:config.mysql.password||'',database:config.mysql.database,waitForConnections:true,connectionLimit:10,decimalNumbers:true});
 const MySQLStore=MySQLStoreFactory(session);
 const store=new MySQLStore({createDatabaseTable:true,clearExpired:true},pool);
 const app=express();
-if(process.env.TRUST_PROXY==='1')app.set('trust proxy',1);
+if(config.server.trustProxy === true)app.set('trust proxy',1);
 app.disable('x-powered-by');
 app.use(helmet({contentSecurityPolicy:false}));
 app.use(express.json({limit:'32kb'}));
-app.use(session({name:'solarlink.sid',secret:process.env.SESSION_SECRET,store,resave:false,saveUninitialized:false,cookie:{httpOnly:true,sameSite:'lax',secure:base.protocol==='https:',maxAge:7*24*60*60*1000}}));
+app.use(session({name:'solarlink.sid',secret:config.session.secret,store,resave:false,saveUninitialized:false,cookie:{httpOnly:true,sameSite:'lax',secure:base.protocol==='https:',maxAge:7*24*60*60*1000}}));
 app.use('/auth',rateLimit({windowMs:15*60*1000,limit:60,standardHeaders:'draft-7',legacyHeaders:false}));
 app.use('/api',rateLimit({windowMs:15*60*1000,limit:180,standardHeaders:'draft-7',legacyHeaders:false}));
 const csrf=(req,res,next)=>{if(req.method==='GET'||req.method==='HEAD')return next();if(req.get('origin')!==base.origin)return res.status(403).json({error:'Invalid origin'});next()};
@@ -32,12 +44,12 @@ const auth=(req,res,next)=>req.session.userId?next():res.status(401).json({error
 const nameOk=s=>typeof s==='string'&&/^[a-z0-9_-]{3,30}$/.test(s);
 const avatar=(id,hash)=>hash?'https://cdn.discordapp.com/avatars/'+encodeURIComponent(id)+'/'+encodeURIComponent(hash)+'.png':null;
 app.get('/health',async(req,res)=>{try{await pool.query('SELECT 1');res.json({ok:true})}catch{res.status(503).json({ok:false})}});
-app.get('/auth/discord',(req,res,next)=>{const state=crypto.randomBytes(32).toString('hex');req.session.oauthState=state;req.session.save(err=>{if(err)return next(err);const q=new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,redirect_uri:callback.href,response_type:'code',scope:'identify',state});res.redirect('https://discord.com/oauth2/authorize?'+q)})});
+app.get('/auth/discord',(req,res,next)=>{const state=crypto.randomBytes(32).toString('hex');req.session.oauthState=state;req.session.save(err=>{if(err)return next(err);const q=new URLSearchParams({client_id:config.discord.clientId,redirect_uri:callback.href,response_type:'code',scope:'identify',state});res.redirect('https://discord.com/oauth2/authorize?'+q)})});
 app.get('/auth/discord/callback',async(req,res,next)=>{try{
  const state=req.query.state,code=req.query.code;
  if(typeof state!=='string'||typeof code!=='string'||!req.session.oauthState||state.length!==req.session.oauthState.length||!crypto.timingSafeEqual(Buffer.from(state),Buffer.from(req.session.oauthState)))return res.status(400).send('Invalid OAuth state. Please retry login.');
  delete req.session.oauthState;
- const tokenRes=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,client_secret:process.env.DISCORD_CLIENT_SECRET,grant_type:'authorization_code',code,redirect_uri:callback.href})});
+ const tokenRes=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:config.discord.clientId,client_secret:config.discord.clientSecret,grant_type:'authorization_code',code,redirect_uri:callback.href})});
  if(!tokenRes.ok)return res.status(502).send('Discord authentication failed');
  const token=await tokenRes.json();
  const meRes=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:'Bearer '+token.access_token}});
@@ -57,4 +69,4 @@ app.put('/api/me',auth,csrf,async(req,res,next)=>{const {username,name,bio,links
 app.get('/api/profile/:username',async(req,res,next)=>{try{if(!nameOk(req.params.username))return res.status(404).json({error:'Not found'});const [[u]]=await pool.execute('SELECT id,discord_id,discord_avatar,username,display_name,bio FROM users WHERE username=?',[req.params.username]);if(!u)return res.status(404).json({error:'Not found'});const [links]=await pool.execute('SELECT title AS label,url FROM profile_links WHERE user_id=? ORDER BY position,id',[u.id]);res.json({username:u.username,name:u.display_name,bio:u.bio,avatar_url:avatar(u.discord_id,u.discord_avatar),links})}catch(e){next(e)}});
 const root=path.dirname(fileURLToPath(import.meta.url));app.get('/',(req,res)=>res.sendFile(path.join(root,'index.html')));
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'Internal server error'})});
-const port=Number(process.env.PORT||3000);app.listen(port,'0.0.0.0',()=>console.log('SolarLink listening on '+port));
+const port=Number(config.server.port||3000);app.listen(port,'0.0.0.0',()=>console.log('SolarLink listening on '+port));
